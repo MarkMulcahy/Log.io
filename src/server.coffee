@@ -80,7 +80,7 @@ inbound TCP messages, and emits events.
 ###
 class LogServer extends events.EventEmitter
   constructor: (config={}) ->
-    {@host, @port} = config
+    {@host, @port, @cachePath} = config
     @_log = config.logging ? winston
     @_delimiter = config.delimiter ? '\r\n'
     @logNodes = {}
@@ -142,9 +142,12 @@ class LogServer extends events.EventEmitter
     @emit 'new_log', stream, node, logLevel, message
     # Write log to cache file
     now = new Date();
-    fs.appendFile "#{logConf.cachePath}/#{stream.name}:#{node.name}",
-      JSON.stringify({time: now, message: message, level: logLevel}) + "\n",
-      (error) ->
+    cacheFile = "#{@cachePath}/#{stream.name}:#{node.name}"
+    cacheStr = JSON.stringify
+        time: now
+        message: message
+        level: logLevel
+    fs.appendFile cacheFile, cacheStr + "\n", (error) ->
           console.error("Error writing file", error) if error
 
   __add: (name, pnames, _collection, _objClass, objName) ->
