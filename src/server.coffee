@@ -140,6 +140,12 @@ class LogServer extends events.EventEmitter
     node = @logNodes[nname] or @_addNode nname, sname
     stream = @logStreams[sname] or @_addStream sname, nname
     @emit 'new_log', stream, node, logLevel, message
+    # Write log to cache file
+    now = new Date();
+    fs.appendFile "#{logConf.cachePath}/#{stream.name}:#{node.name}",
+      JSON.stringify({time: now, message: message, level: logLevel}) + "\n",
+      (error) ->
+          console.error("Error writing file", error) if error
 
   __add: (name, pnames, _collection, _objClass, objName) ->
     @_log.info "Adding #{objName}: #{name} (#{pnames})"
