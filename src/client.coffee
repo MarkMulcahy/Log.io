@@ -77,11 +77,14 @@ class LogNodes extends _LogObjects
 class LogMessage extends backbone.Model
   ROPEN = new RegExp '<','ig'
   RCLOSE = new RegExp '>','ig'
+  idAttribute: 'date'
   render_message: ->
     @get('message').replace(ROPEN, '&lt;').replace(RCLOSE, '&gt;')
 
 class LogMessages extends backbone.Collection
   model: LogMessage
+  comparator: 'date'
+
   constructor: (args...) ->
     super args...
     @on 'add', @_capped
@@ -123,7 +126,14 @@ class LogScreen extends backbone.Model
     node.trigger 'lunwatch', stream, @
     stream.screens.remove @
     node.screens.remove @
+    @_updateLogMessages stream, node
     @collection.trigger 'removePair'
+
+  _updateLogMessages: (stream, node) ->
+    @logMessages.remove @logMessages.filter (lmessage) ->
+      sname = lmessage.get('stream').get 'name'
+      nname = lmessage.get('node').get 'name'
+      (sname is stream.get 'name') and nname is node.get 'name'
 
   hasPair: (stream, node) ->
     pid = @_pid stream, node
@@ -175,6 +185,7 @@ class WebClient
     _on 'remove_stream', @_removeStream
     _on 'add_pair', @_addPair
     _on 'new_log', @_newLog
+    _on 'historic_logs', @_addHistoricLogs
     _on 'ping', @_ping
     _on 'disconnect', @_disconnect
 
@@ -199,7 +210,8 @@ class WebClient
       @socket.emit 'unwatch', screen._pid stream, node
 
   _removeNode: (node) =>
-    @logNodes.get(node.name)?.destroy()
+    @logScreens.trigger 'removePair'
+    (@logNodes.get node.name)?.destroy()
     @stats.nodes--
 
   _removeStream: (stream) =>
@@ -215,7 +227,7 @@ class WebClient
       screen.addPair stream, node if screen.hasPair stream, node
 
   _newLog: (msg) =>
-    {stream, node, level, message} = msg
+    {stream, node, level, message, date} = msg
     stream = @logStreams.get stream
     node = @logNodes.get node
     @logScreens.each (screen) ->
@@ -225,6 +237,24 @@ class WebClient
           node: node
           level: level
           message: message
+          date: date
+
+  _addHistoricLogs: (msg) =>
+    {stream, node, messages} = msg
+    stream = @logStreams.get stream
+    node = @logNodes.get node
+    logMessages = []
+    for lmessage in messages
+      logMessages.push new LogMessage
+        stream: stream
+        node: node
+        level: lmessage.level
+        message: lmessage.message
+        date: lmessage.date
+
+    @logScreens.each (screen) ->
+      if screen.hasPair stream, node
+        screen.trigger 'historic_logs', logMessages
 
   _ping: (msg) =>
     {stream, node} = msg
@@ -529,6 +559,8 @@ class LogScreenView extends backbone.View
     {@logScreen, @logScreens} = opts
     @listenTo @logScreen, 'destroy', => @remove()
     @listenTo @logScreen, 'new_log', @_addNewLogMessage
+    @listenTo @logScreen, 'historic_logs', @_addHistoricLogMessages
+    @listenTo @logScreens, 'removePair', @_renderMessages
     @forceScroll = true
     @filter = null
 
@@ -560,6 +592,10 @@ class LogScreenView extends backbone.View
   _addNewLogMessage: (lmessage) =>
     @logScreen.logMessages.add lmessage
     @_renderNewLog lmessage
+
+  _addHistoricLogMessages: (lmessages) =>
+    @logScreen.logMessages.add lmessages
+    @_renderMessages()
 
   _recordScroll: (e) =>
     msgs = @$el.find '.messages'

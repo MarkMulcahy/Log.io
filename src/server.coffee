@@ -85,6 +85,7 @@ class LogServer extends events.EventEmitter
     @_delimiter = config.delimiter ? '\r\n'
     @logNodes = {}
     @logStreams = {}
+    @on 'new_log', @_cacheLogMessage
 
   run: ->
     # Create TCP listener socket
@@ -94,6 +95,15 @@ class LogServer extends events.EventEmitter
       socket.on 'error', => @_tearDown socket
       socket.on 'close', => @_tearDown socket
     @listener.listen @port, @host
+
+  getLogHistory: (sname, nname, callback) ->
+    cacheFile = @_getCacheFilename sname, nname
+    options = encoding: 'utf8'
+    fs.readFile cacheFile, options, (err, lmessages) =>
+      if err
+        @_log.error "Error reading cache file: #{err}"
+        lmessages = ''
+      callback @_parseCacheFile lmessages
 
   _tearDown: (socket) ->
     # Destroy a client socket
@@ -145,16 +155,23 @@ class LogServer extends events.EventEmitter
     @_log.debug "Log message: (#{sname}, #{nname}, #{logLevel}) #{message}"
     node = @logNodes[nname] or @_addNode nname, sname
     stream = @logStreams[sname] or @_addStream sname, nname
-    @emit 'new_log', stream, node, logLevel, message
-    # Write log to cache file
-    now = new Date();
-    cacheFile = "#{@cachePath}/#{stream.name}:#{node.name}"
+    @emit 'new_log', stream, node, logLevel, message, new Date
+
+  _getCacheFilename: (sname, nnode) ->
+    "#{@cachePath}/#{sname}:#{nnode}"
+
+  _parseCacheFile: (cacheData) ->
+    lmessages = cacheData.split '\n'
+    (JSON.parse message for message in lmessages when message)
+
+  _cacheLogMessage: (stream, node, logLevel, message) ->
+    cacheFile = @_getCacheFilename stream.name, node.name
     cacheStr = JSON.stringify
-        time: now
-        message: message
-        level: logLevel
-    fs.appendFile cacheFile, cacheStr + "\n", (error) ->
-          console.error("Error writing file", error) if error
+      date: new Date
+      message: message
+      level: logLevel
+    fs.appendFile cacheFile, "#{cacheStr}\n", (error) ->
+      @_log.error "Error writing file: #{error}" if error
 
   __add: (name, pnames, _collection, _objClass, objName) ->
     @_log.info "Adding #{objName}: #{name} (#{pnames})"
@@ -218,6 +235,14 @@ class WebServer
     else
       return http.createServer app
 
+  _sendLogHistory: (wclient, pid) ->
+    [sname, nname] = pid.split ':'
+    lmessages = @logServer.getLogHistory sname, nname, (lmessages) ->
+      wclient.emit 'historic_logs',
+        stream: sname,
+        node: nname,
+        messages: lmessages
+
   run: ->
     @_log.info 'Starting Log.io Web Server...'
     @logServer.run()
@@ -246,14 +271,16 @@ class WebServer
       _emit 'remove_stream', stream.toDict()
 
     # Bind new log event from Logserver to web client
-    _on 'new_log', (stream, node, level, message) =>
+    _on 'new_log', (stream, node, level, message, date) =>
       _emit 'ping', {stream: stream.name, node: node.name}
       # Only send message to web clients watching logStream
-      @listener.in("#{stream.name}:#{node.name}").emit 'new_log',
+      pid = "#{stream.name}:#{node.name}"
+      @listener.in(pid).emit 'new_log',
         stream: stream.name
         node: node.name
         level: level
         message: message
+        date: date
 
     # Bind web client connection, events to web server
     @listener.on 'connection', (wclient) =>
@@ -263,8 +290,9 @@ class WebServer
         for s, stream of node.pairs
           wclient.emit 'add_pair', {stream: s, node: n}
       wclient.emit 'initialized'
-      wclient.on 'watch', (pid) ->
+      wclient.on 'watch', (pid) =>
         wclient.join pid
+        @_sendLogHistory wclient, pid
       wclient.on 'unwatch', (pid) ->
         wclient.leave pid
     @_log.info 'Server started, listening...'
